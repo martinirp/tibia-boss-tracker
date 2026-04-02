@@ -1,5 +1,5 @@
 {
-  "name": "boss-tracker",
+  "name": "tibia-boss-tracker",
   "version": "1.0.0",
   "description": "Tibia Boss Tracker Backend",
   "main": "server.js",
