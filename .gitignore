@@ -1,0 +1,5 @@
+node_modules/
+bossTracker.db
+bossTracker.db-journal
+.env
+.DS_Store

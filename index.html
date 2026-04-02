@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TibiaData - Kill Statistics Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                📊 Kill Statistics Dashboard
+                <span id="worldBadge" class="world-badge">Selecione um mundo</span>
+            </h1>
+            <p class="subtitle">Estatísticas de mortes de criaturas por mundo - Atualização a cada 60 segundos (cache da
+                API)</p>
+        </div>
+
+        <div class="search-section">
+            <div class="search-box">
+                <input type="text" id="worldInput" placeholder="Nome do mundo (ex: Antica, Secura, Gladera)" />
+                <button onclick="fetchKillStats()">Buscar</button>
+            </div>
+            <div class="refresh-info">
+                ⏱️ Cache: 60 segundos | Dados das últimas 24h e 7 dias
+            </div>
+        </div>
+
+        <div id="dashboard">
+            <div class="loading">🔍 Aguardando busca... Digite um mundo e clique em Buscar</div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
