@@ -1,5 +1,14 @@
 node_modules/
 bossTracker.db
 bossTracker.db-journal
+boss_tracker.db
+boss_tracker.db-shm
+boss_tracker.db-wal
+api_dump.json
+erro.txt
+debug_matching.js
+boss_mapping.json
+img/Thumbs.db
+check_bosses.js
 .env
 .DS_Store

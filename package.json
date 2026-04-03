@@ -1,15 +1,19 @@
 {
   "name": "tibia-boss-tracker",
-  "version": "1.0.0",
-  "description": "Tibia Boss Tracker Backend",
+  "version": "2.0.0",
+  "description": "Rastreador inteligente de respawns de bosses do Tibia",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
   "dependencies": {
+    "better-sqlite3": "^9.4.3",
     "cors": "^2.8.5",
     "express": "^4.18.2",
-    "node-cron": "^3.0.3",
-    "sqlite3": "^5.1.7"
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   }
 }

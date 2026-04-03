@@ -1,132 +1,116 @@
-const API_BASE = 'http://localhost:3000'; // Se for hospedar em um servidor remoto, mude este endereço para o seu IP.
+const API_BASE = window.location.origin;
 
-async function fetchKillStats() {
-    const worldInput = document.getElementById('worldInput');
-    const world = worldInput.value.trim();
+let allPredictions = [];
+let currentFilter = 'all';
+let currentWorld = 'Quelibra'; // será sobrescrito pelo /api/config
 
-    if (!world) {
-        showError('Por favor, digite o nome de um mundo!');
+async function loadPredictions() {
+    const grid = document.getElementById('grid');
+    const updateEl = document.getElementById('lastUpdate');
+    const worldBadge = document.getElementById('worldBadge');
+
+    try {
+        // Busca o world configurado no servidor antes de qualquer chamada
+        const cfgRes = await fetch(`${API_BASE}/api/config`);
+        if (cfgRes.ok) {
+            const cfg = await cfgRes.json();
+            currentWorld = cfg.defaultWorld || currentWorld;
+        }
+
+        const response = await fetch(`${API_BASE}/api/bosses/${encodeURIComponent(currentWorld)}`);
+        if (!response.ok) throw new Error('Falha na conexão');
+        
+        const data = await response.json();
+        allPredictions = data.bosses || [];
+        worldBadge.innerText = data.world || currentWorld;
+        updateEl.innerText = `Atualizado: ${data.last_update || 'Agora'}`;
+        
+        renderGrid();
+    } catch (err) {
+        console.error(err);
+        grid.innerHTML = `<div class="col-12 text-center text-danger py-5">Erro ao carregar dados. Verifique o servidor.</div>`;
+    }
+}
+
+function renderGrid() {
+    const grid = document.getElementById('grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+
+    let filtered = allPredictions;
+    if (currentFilter === 'hot') {
+        filtered = allPredictions.filter(p => p.chance_percent >= 90);
+    } else if (currentFilter === 'recent') {
+        filtered = allPredictions.filter(p => p.kills_yesterday > 0);
+    } else if (currentFilter === 'high') {
+        filtered = allPredictions.filter(p => p.chance_percent >= 80 && p.chance_percent < 90);
+    }
+
+    if (filtered.length === 0) {
+        grid.innerHTML = `<div class="col-12 text-center text-white-50 py-5">Nenhum boss encontrado neste filtro.</div>`;
         return;
     }
 
-    document.getElementById('worldBadge').textContent = world;
-    document.getElementById('worldBadge').style.background = '#4caf50';
-
-    await loadBossPredictions(world);
-}
-
-async function loadBossPredictions(world) {
-    const dashboard = document.getElementById('dashboard');
-    dashboard.innerHTML = '<div class="loading">🔄 Carregando IA preditiva para ' + world + '...</div>';
-
-    try {
-        const response = await fetch(`${API_BASE}/api/bosses/${encodeURIComponent(world)}`);
+    filtered.forEach(p => {
+        const cat = getCategory(p);
+        const col = document.createElement('div');
+        col.className = 'col';
         
-        if (!response.ok) {
-            throw new Error("Backend offline ou servidor retornou erro");
-        }
-
-        const data = await response.json();
-        
-        if (!data.predictions || data.predictions.length === 0) {
-            dashboard.innerHTML = '<div class="error">❌ Nenhuma previsão encontrada. Pressione buscar ou aguarde.</div>';
-            return;
-        }
-
-        displayBossPredictions(data.predictions);
-
-    } catch (error) {
-        console.error('Erro:', error);
-        dashboard.innerHTML = `<div class="error">❌ Erro ao conectar com a API preditiva local (porta 3000). Certifique-se de iniciar o servidor.<br><br>Detalhes: ${error.message}</div>`;
-    }
-}
-
-function displayBossPredictions(predictions) {
-    const cardsHtml = predictions.map((p) => {
-        let statusClass = '';
-        if (p.chance_percent === 0 && p.last_seen === null) {
-             statusClass = 'status-unknown';
-        } else if (p.chance_percent < 80) {
-             statusClass = 'status-cooldown';
-        } else if (p.chance_percent < 100) {
-             statusClass = 'status-high';
-        } else {
-             statusClass = 'status-delayed';
-        }
-
-        let timeText;
-        if (p.last_seen === null) {
-            timeText = 'Sem Histórico Guardado';
-        } else {
-            const daysLeft = p.expected_days - p.days_since;
-            if (daysLeft > 0) {
-                timeText = `Previsto em aprox. ${daysLeft} dia(s)`;
-            } else {
-                timeText = `Atrasado na média (${Math.abs(daysLeft)} dias)`;
-            }
-        }
-
-        const avgInfo = p.has_dynamic_avg 
-            ? "Média Real (Cálculo do BD)" 
-            : "Média Padrão (Bosses.json)";
-
-        const imgSrc = `images/${p.name}.gif`;
-
-        return \`
-            <div class="boss-card \${statusClass}">
-                <div class="boss-image">
-                    <img src="\${imgSrc}" alt="\${p.name}" onerror="this.onerror=null; this.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='; this.alt='Sem imagem';">
+        col.innerHTML = `
+            <div class="boss-card ${cat}">
+                <div class="img-container">
+                    <img src="img/${p.name.replace(/ /g, '_')}.gif" 
+                         onerror="this.onerror=null;this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 48 48%22%3E%3Crect width=%2248%22 height=%2248%22 rx=%226%22 fill=%22%23111%22/%3E%3Ctext x=%2224%22 y=%2232%22 text-anchor=%22middle%22 font-size=%2228%22 fill=%22%23555%22%3E%3F%3C/text%3E%3C/svg%3E'"
+                         class="boss-img">
                 </div>
-                <div class="boss-details">
-                    <h3 class="boss-name">\${p.name}</h3>
-                    <div class="boss-chance">
-                        <span class="chance-value">\${p.chance_percent}%</span>
-                        <div class="progress-bar">
-                            <div class="progress-fill" style="width: \${p.chance_percent}%"></div>
-                        </div>
-                    </div>
-                    <div class="boss-time">\${timeText}</div>
-                    <div class="boss-meta">
-                        <small>Último: \${p.last_seen ? new Date(p.last_seen).toLocaleDateString('pt-BR') : 'Desconhecido'}</small><br>
-                        <small style="color: \${p.has_dynamic_avg ? '#ae9ce5' : '#888'}">\${avgInfo}: \${p.expected_days} dias</small>
-                    </div>
+                <h3 class="boss-name">${p.name}</h3>
+                <div class="chance-box">
+                    <span class="chance-percent">${p.chance_percent}%</span>
+                </div>
+                <div class="p-bar-container">
+                    <div class="p-bar-fill" style="width: ${p.chance_percent}%"></div>
+                </div>
+                <div class="tags-container">
+                    ${p.kills_yesterday > 0 ? `<span class="tag-mini tag-fire">${p.kills_yesterday} Kills</span>` : ''}
+                    <span class="tag-mini">${p.status}</span>
                 </div>
             </div>
-        \`;
-    }).join('');
-
-    const html = \`
-        <div class="predictions-header">
-            <h2 style="color: #ffd700; margin-bottom: 10px; font-size: 22px;">🔮 Inteligência de Respawn (${predictions.length} Bosses)</h2>
-            <p style="color: #aaa; font-size: 14px; margin-bottom: 20px;">
-               Os cards ordenam quem está mais perto de nascer. O backend aprende as médias dinamicamente 
-               comparando o tempo entre todas as mortes já registradas no banco de dados.
-            </p>
-        </div>
-        <div class="boss-cards-container">
-            \${cardsHtml}
-        </div>
-    \`;
-
-    document.getElementById('dashboard').innerHTML = html;
+        `;
+        grid.appendChild(col);
+    });
 }
 
-document.getElementById('worldInput').addEventListener('keypress', function (e) {
-    if (e.key === 'Enter') {
-        fetchKillStats();
-    }
-});
+function getCategory(p) {
+    if (!p.total_kills || p.last_seen === null) return 'none';
+    if (p.chance_percent >= 90) return 'hot';
+    if (p.chance_percent >= 50) return 'high';
+    return 'wait';
+}
 
-document.addEventListener('DOMContentLoaded', async () => {
+function setFilter(filter, el) {
+    currentFilter = filter;
+    document.querySelectorAll('.f-pill').forEach(b => b.classList.remove('active'));
+    el.classList.add('active');
+    renderGrid();
+}
+
+async function forceFetch() {
+    console.log('[UI] Botão Coletar Agora pressionado.');
+    const btn = document.getElementById('collectBtn');
+    const label = document.getElementById('collectLabel');
+    btn.disabled = true;
+    label.innerText = 'Coletando...';
+    
     try {
-        const res = await fetch(\`\${API_BASE}/api/config\`);
-        if (res.ok) {
-            const config = await res.json();
-            document.getElementById('worldInput').value = config.defaultWorld;
-            fetchKillStats();
-        }
-    } catch(err) {
-        document.getElementById('worldInput').value = 'Quelibra';
-        fetchKillStats();
+        await fetch(`${API_BASE}/api/fetch/${encodeURIComponent(currentWorld)}`, { method: 'POST' });
+        await loadPredictions();
+    } catch (err) {
+        console.error(err);
+    } finally {
+        btn.disabled = false;
+        label.innerText = 'Coletar Agora';
     }
-});
+}
+
+document.addEventListener('DOMContentLoaded', loadPredictions);
+setInterval(loadPredictions, 5 * 60 * 1000);
