@@ -2,5 +2,6 @@ node_modules/
 boss_tracker.db*
 api_dump.json
 erro.txt
+img/Thumbs.db
 .env
 .DS_Store
