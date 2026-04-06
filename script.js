@@ -57,7 +57,7 @@ function renderGrid() {
         col.className = 'col';
         
         col.innerHTML = `
-            <div class="boss-card ${cat}">
+            <div class="boss-card ${cat}" onclick="openBossModal(${JSON.stringify(p).replace(/"/g, '&quot;')})" style="cursor:pointer;">
                 <div class="img-container">
                     <img src="img/${p.name.replace(/ /g, '_')}.gif" 
                          onerror="this.onerror=null;this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 48 48%22%3E%3Crect width=%2248%22 height=%2248%22 rx=%226%22 fill=%22%23111%22/%3E%3Ctext x=%2224%22 y=%2232%22 text-anchor=%22middle%22 font-size=%2228%22 fill=%22%23555%22%3E%3F%3C/text%3E%3C/svg%3E'"
@@ -112,5 +112,166 @@ async function forceFetch() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', loadPredictions);
+document.addEventListener('DOMContentLoaded', () => {
+    loadPredictions();
+    buildModal();
+});
 setInterval(loadPredictions, 5 * 60 * 1000);
+
+function buildModal() {
+    const overlay = document.createElement('div');
+    overlay.id = 'bossModalOverlay';
+    overlay.className = 'boss-modal-overlay';
+    overlay.innerHTML = `
+        <div class="boss-modal glass-panel" id="bossModalPanel">
+            <button class="modal-close-btn" onclick="closeBossModal()"><i class="fas fa-times"></i></button>
+            <div class="modal-header">
+                <div class="modal-img-wrap">
+                    <img id="modalImg" src="" class="modal-boss-img" onerror="this.onerror=null;this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 48 48%22%3E%3Crect width=%2248%22 height=%2248%22 rx=%226%22 fill=%22%23111%22/%3E%3Ctext x=%2224%22 y=%2232%22 text-anchor=%22middle%22 font-size=%2228%22 fill=%22%23555%22%3E%3F%3C/text%3E%3C/svg%3E'">
+                </div>
+                <div>
+                    <h2 id="modalName" class="modal-boss-name"></h2>
+                    <span id="modalStatus" class="modal-status-tag"></span>
+                </div>
+            </div>
+
+            <div class="modal-stats-row">
+                <div class="modal-stat-box">
+                    <span class="modal-stat-label">Chance de Nascer</span>
+                    <span class="modal-stat-value" id="modalChance"></span>
+                </div>
+                <div class="modal-stat-box">
+                    <span class="modal-stat-label">Última Morte</span>
+                    <span class="modal-stat-value" id="modalLastSeen"></span>
+                </div>
+                <div class="modal-stat-box">
+                    <span class="modal-stat-label">Dias Desde</span>
+                    <span class="modal-stat-value" id="modalDaysSince"></span>
+                </div>
+                <div class="modal-stat-box">
+                    <span class="modal-stat-label">Total de Mortes</span>
+                    <span class="modal-stat-value" id="modalTotalKills"></span>
+                </div>
+            </div>
+
+            <div class="modal-cycle-box" id="modalCycleBox">
+                <div class="modal-cycle-line" id="modalCycleLine"></div>
+                <div class="modal-cycle-line" id="modalNextSpawn"></div>
+            </div>
+
+            <div class="modal-history-section">
+                <h4 class="modal-section-title">Histórico de Mortes (7 dias)</h4>
+                <div id="modalHistory7d" class="modal-history-grid"></div>
+            </div>
+
+            <div class="modal-history-section">
+                <h4 class="modal-section-title">Histórico Completo</h4>
+                <div id="modalHistoryFull" class="modal-history-list"></div>
+            </div>
+        </div>
+    `;
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeBossModal();
+    });
+    document.body.appendChild(overlay);
+}
+
+async function openBossModal(p) {
+    document.getElementById('bossModalOverlay').classList.add('active');
+    document.body.style.overflow = 'hidden';
+
+    const cat = getCategory(p);
+
+    document.getElementById('modalImg').src = `img/${p.name.replace(/ /g, '_')}.gif`;
+    document.getElementById('modalName').innerText = p.name;
+
+    const statusEl = document.getElementById('modalStatus');
+    statusEl.innerText = p.status;
+    statusEl.className = 'modal-status-tag status-' + cat;
+
+    document.getElementById('modalChance').innerText = p.chance_percent + '%';
+    document.getElementById('modalChance').className = 'modal-stat-value color-' + cat;
+    document.getElementById('modalLastSeen').innerText = p.last_seen ? formatDate(p.last_seen) : '—';
+    document.getElementById('modalDaysSince').innerText = p.days_since !== null ? p.days_since + ' dias' : '—';
+    document.getElementById('modalTotalKills').innerText = p.total_kills || 0;
+
+    const cycleBox = document.getElementById('modalCycleBox');
+    const cycleLine = document.getElementById('modalCycleLine');
+    const nextSpawn = document.getElementById('modalNextSpawn');
+
+    if (p.expected_days) {
+        cycleBox.style.display = 'block';
+        cycleLine.innerHTML = `<i class="fas fa-sync-alt me-2" style="color: var(--primary-gold)"></i> Nasce a cada <strong>${p.expected_days} dias</strong> em média`;
+        const daysLeft = p.expected_days - (p.days_since || 0);
+        if (daysLeft > 0) {
+            nextSpawn.innerHTML = `<i class="fas fa-hourglass-half me-2" style="color: #ffa502"></i> Próximo spawn estimado daqui <strong>${daysLeft} dia${daysLeft !== 1 ? 's' : ''}</strong>`;
+        } else {
+            nextSpawn.innerHTML = `<i class="fas fa-exclamation-circle me-2" style="color: #ff4757"></i> <strong>Atrasado!</strong> Deveria ter nascido há ${Math.abs(daysLeft)} dia${Math.abs(daysLeft) !== 1 ? 's' : ''}`;
+        }
+    } else {
+        cycleBox.style.display = 'none';
+    }
+
+    render7dHistory(p);
+
+    try {
+        const res = await fetch(`${API_BASE}/api/history/${encodeURIComponent(currentWorld)}/${encodeURIComponent(p.name)}`);
+        const data = await res.json();
+        renderFullHistory(data.kills || []);
+    } catch {
+        document.getElementById('modalHistoryFull').innerHTML = '<span class="text-white-50 small">Erro ao carregar histórico.</span>';
+    }
+}
+
+function render7dHistory(p) {
+    const grid = document.getElementById('modalHistory7d');
+    grid.innerHTML = '';
+    const today = new Date();
+    for (let i = 6; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const dateStr = d.toISOString().split('T')[0];
+        const label = i === 0 ? 'Hoje' : i === 1 ? 'Ontem' : d.toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit' });
+        const killed = p.kills_yesterday > 0 && i === 1;
+
+        const cell = document.createElement('div');
+        cell.className = 'history-day-cell' + (killed ? ' killed' : '');
+        cell.innerHTML = `
+            <span class="history-day-label">${label}</span>
+            <span class="history-day-icon">${killed ? '<i class="fas fa-skull"></i>' : '<i class="fas fa-circle"></i>'}</span>
+            <span class="history-day-count">${killed ? p.kills_yesterday + 'x' : '—'}</span>
+        `;
+        grid.appendChild(cell);
+    }
+}
+
+function renderFullHistory(kills) {
+    const list = document.getElementById('modalHistoryFull');
+    if (!kills || kills.length === 0) {
+        list.innerHTML = '<span class="text-white-50 small">Sem mortes registradas ainda.</span>';
+        return;
+    }
+    const sorted = [...kills].sort((a, b) => b.kill_date.localeCompare(a.kill_date));
+    list.innerHTML = sorted.map(k => `
+        <div class="history-full-row">
+            <i class="fas fa-skull-crossbones" style="color: var(--status-hot); font-size: 11px;"></i>
+            <span>${formatDate(k.kill_date)}</span>
+            <span class="history-kills-badge">${k.amount_killed || 1}x abatido</span>
+        </div>
+    `).join('');
+}
+
+function closeBossModal() {
+    document.getElementById('bossModalOverlay').classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+function formatDate(dateStr) {
+    if (!dateStr) return '—';
+    const [y, m, d] = dateStr.split('-');
+    return `${d}/${m}/${y}`;
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeBossModal();
+});
