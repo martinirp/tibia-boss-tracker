@@ -56,10 +56,11 @@ function renderGrid() {
         const col = document.createElement('div');
         col.className = 'col';
         
+        const cleanImgName = p.name.replace(/\s*\(.*?\)\s*/g, '').replace(/ /g, '_');
         col.innerHTML = `
             <div class="boss-card ${cat}" onclick="openBossModal(${JSON.stringify(p).replace(/"/g, '&quot;')})" style="cursor:pointer;">
                 <div class="img-container">
-                    <img src="img/${p.name.replace(/ /g, '_')}.gif" 
+                    <img src="img/${cleanImgName}.gif" 
                          onerror="this.onerror=null;this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 48 48%22%3E%3Crect width=%2248%22 height=%2248%22 rx=%226%22 fill=%22%23111%22/%3E%3Ctext x=%2224%22 y=%2232%22 text-anchor=%22middle%22 font-size=%2228%22 fill=%22%23555%22%3E%3F%3C/text%3E%3C/svg%3E'"
                          class="boss-img">
                 </div>
@@ -157,6 +158,7 @@ function buildModal() {
             <div class="modal-cycle-box" id="modalCycleBox">
                 <div class="modal-cycle-line" id="modalCycleLine"></div>
                 <div class="modal-cycle-line" id="modalNextSpawn"></div>
+                <div class="modal-cycle-line" id="modalLastCheck" style="margin-top: 8px; display: none;"></div>
             </div>
 
             <div class="modal-history-section">
@@ -182,7 +184,8 @@ async function openBossModal(p) {
 
     const cat = getCategory(p);
 
-    document.getElementById('modalImg').src = `img/${p.name.replace(/ /g, '_')}.gif`;
+    const cleanImgName = p.name.replace(/\s*\(.*?\)\s*/g, '').replace(/ /g, '_');
+    document.getElementById('modalImg').src = `img/${cleanImgName}.gif`;
     document.getElementById('modalName').innerText = p.name;
 
     const statusEl = document.getElementById('modalStatus');
@@ -191,7 +194,19 @@ async function openBossModal(p) {
 
     document.getElementById('modalChance').innerText = p.chance_percent + '%';
     document.getElementById('modalChance').className = 'modal-stat-value color-' + cat;
-    document.getElementById('modalLastSeen').innerText = p.last_seen ? formatDate(p.last_seen) : '—';
+
+    // Detalhar última morte
+    if (p.last_seen) {
+        let lastSeenText = formatDate(p.last_seen);
+        if (p.seen_at_full) {
+            const timePart = p.seen_at_full.split(' ')[1];
+            lastSeenText += ` às ${timePart}`;
+        }
+        document.getElementById('modalLastSeen').innerText = lastSeenText;
+    } else {
+        document.getElementById('modalLastSeen').innerText = '—';
+    }
+
     document.getElementById('modalDaysSince').innerText = p.days_since !== null ? p.days_since + ' dias' : '—';
     document.getElementById('modalTotalKills').innerText = p.total_kills || 0;
 
@@ -210,6 +225,31 @@ async function openBossModal(p) {
         }
     } else {
         cycleBox.style.display = 'none';
+    }
+
+    // Resolvendo check de boss (se aconteceu após a última morte)
+    const checkEl = document.getElementById('modalLastCheck');
+    if (p.checked_at) {
+        const checkDate = p.checked_at.split(' ')[0];
+        const checkTime = p.checked_at.split(' ')[1];
+        checkEl.innerHTML = `<i class="fas fa-search me-2" style="color: #54a0ff"></i> Último check: <strong>${formatDate(checkDate)} às ${checkTime}</strong> (Não nascido)`;
+        checkEl.style.display = 'block';
+        if (!p.expected_days) {
+            cycleBox.style.display = 'block';
+            cycleLine.style.display = 'none';
+            nextSpawn.style.display = 'none';
+        } else {
+            cycleLine.style.display = 'block';
+            nextSpawn.style.display = 'block';
+        }
+    } else {
+        checkEl.style.display = 'none';
+        if (!p.expected_days) {
+            cycleBox.style.display = 'none';
+        } else {
+            cycleLine.style.display = 'block';
+            nextSpawn.style.display = 'block';
+        }
     }
 
     render7dHistory(p);
@@ -251,14 +291,25 @@ function renderFullHistory(kills) {
         list.innerHTML = '<span class="text-white-50 small">Sem mortes registradas ainda.</span>';
         return;
     }
-    const sorted = [...kills].sort((a, b) => b.kill_date.localeCompare(a.kill_date));
-    list.innerHTML = sorted.map(k => `
-        <div class="history-full-row">
-            <i class="fas fa-skull-crossbones" style="color: var(--status-hot); font-size: 11px;"></i>
-            <span>${formatDate(k.kill_date)}</span>
-            <span class="history-kills-badge">${k.amount_killed || 1}x abatido</span>
-        </div>
-    `).join('');
+    const sorted = [...kills].sort((a, b) => {
+        if (b.kill_date !== a.kill_date) {
+            return b.kill_date.localeCompare(a.kill_date);
+        }
+        return (b.created_at || '').localeCompare(a.created_at || '');
+    });
+    list.innerHTML = sorted.map(k => {
+        const extraText = k.extra_text ? ` (${k.extra_text})` : '';
+        return `
+            <div class="history-full-row d-flex align-items-center justify-content-between py-2 border-bottom border-white-10">
+                <div>
+                    <i class="fas fa-skull-crossbones me-2" style="color: var(--status-hot); font-size: 11px;"></i>
+                    <span class="fw-semibold">${formatDate(k.kill_date)}</span>
+                    <span class="text-white-50 small ms-2">${extraText}</span>
+                </div>
+                <span class="badge bg-danger rounded-pill">${k.amount_killed || 1}x</span>
+            </div>
+        `;
+    }).join('');
 }
 
 function closeBossModal() {

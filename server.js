@@ -18,12 +18,50 @@ if (fs.existsSync(configPath)) {
 }
 const PORT = config.port || 3000;
 
-// ─── Bosses monitorados ───────────────────────────────────────────────────────
+// ─── Mapeamento Multi-Cidades ─────────────────────────────────────────────────
+const MULTI_CITY_BOSSES = {
+  "rotworm queen": ["Ab'Dendriel", "Darashia", "Edron", "Liberty Bay"],
+  "the voice of ruin": ["Esquerda", "Direita"],
+  "flamecaller zazrak": ["Surface", "North"],
+  "tyrn": ["Liberty Bay", "Drefia"],
+  "dreadmaw": ["West", "East"],
+  "white pale": ["Edron", "Darashia", "Liberty Bay"],
+  "hirintror": ["Mines", "Nibelor"],
+  "battlemaster zunzu": ["West", "East"],
+  "fleabringer": ["Surface", "North", "Sul"],
+  "albino dragon": ["Farmine", "Fenrock", "Goroma", "POI", "Ank"]
+};
+
+// ─── Bosses monitorados (e expansão por cidade) ──────────────────────────────
 const bossesPath = path.join(__dirname, 'bosses.json');
-let monitoredBosses = []; // Array de strings ["Nome", "Nome2"...]
+let monitoredBosses = [];
 if (fs.existsSync(bossesPath)) {
-    monitoredBosses = JSON.parse(fs.readFileSync(bossesPath, 'utf8'));
+    const rawMonitoredBosses = JSON.parse(fs.readFileSync(bossesPath, 'utf8'));
+    for (const boss of rawMonitoredBosses) {
+        const key = boss.toLowerCase();
+        if (MULTI_CITY_BOSSES[key]) {
+            for (const city of MULTI_CITY_BOSSES[key]) {
+                monitoredBosses.push(`${boss} (${city})`);
+            }
+        } else {
+            monitoredBosses.push(boss);
+        }
+    }
 }
+
+// ─── Carregar Intervalos do BossBot ─────────────────────────────────────────
+const intervalsPath = path.join(__dirname, '..', 'BossBot', 'boss_intervals.json');
+let bossIntervals = {};
+function loadBossIntervals() {
+    if (fs.existsSync(intervalsPath)) {
+        try {
+            bossIntervals = JSON.parse(fs.readFileSync(intervalsPath, 'utf8'));
+        } catch (e) {
+            console.error('Error loading boss_intervals.json:', e);
+        }
+    }
+}
+loadBossIntervals();
 
 // ─── Lógica principal: buscar kill stats e detectar mortes ───────────────────
 async function processWorldStats(world) {
@@ -138,7 +176,8 @@ function loadRealApiNames() {
 }
 
 function isMatch(bossName, apiName) {
-    const nBoss = normalizeForMatch(bossName);
+    const cleanBossName = bossName.replace(/\s*\(.*?\)\s*/g, '');
+    const nBoss = normalizeForMatch(cleanBossName);
     const nApi = normalizeForMatch(apiName);
     
     if (nBoss === nApi) return true;
@@ -177,91 +216,108 @@ app.get('/api/bosses/:world', (req, res) => {
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
 
-    // Data de "ontem" para exibir no card
+    // Data de "ontem" (horário BRT para fins de cálculo de mortes)
     const yesterdayDate = new Date();
-    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    yesterdayDate.setUTCHours(yesterdayDate.getUTCHours() - 3);
+    yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1);
     const yesterdayStr = yesterdayDate.toISOString().split('T')[0];
 
+    // Recarregar intervalos para refletir alterações recentes
+    loadBossIntervals();
+
     const predictions = monitoredBosses.map(bossName => {
+        const lastSeen = db.getBossLastSeen(world, bossName);
+        const lastCheck = db.getBossCheck(world, bossName);
         const kills = db.getKillHistory(world, bossName) || [];
         const totalKillsCount = kills.length;
 
-        if (totalKillsCount === 0) {
+        // Se nunca foi visto
+        if (!lastSeen) {
             return {
                 name: bossName,
                 last_seen: null,
+                seen_at_full: null,
+                confirmed_by: null,
+                city: null,
                 days_since: null,
                 expected_days: null,
                 chance_percent: 0,
                 status: 'Sem dados',
                 total_kills: 0,
-                kills_yesterday: 0
+                kills_yesterday: 0,
+                checked_at: null,
+                checked_by: null
             };
         }
 
-        const lastKill = kills[totalKillsCount - 1];
-        const lastDate = new Date(lastKill.kill_date);
-        const daysSince = Math.floor((now - lastDate) / 86400000);
+        const last_seen_date = lastSeen.seen_at.split(' ')[0]; // YYYY-MM-DD
+        const seenDate = new Date(last_seen_date + 'T03:00:00Z');
+        const diffTime = Math.abs(now - seenDate);
+        let daysSince = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) - 1;
+        if (daysSince < 0) daysSince = 0;
 
-        // Verifica se houve kill em "ontem" (o último ciclo coletado)
-        const killYesterdayRecord = kills.find(k => k.kill_date === yesterdayStr);
-        const killsYesterdayAmount = killYesterdayRecord ? (killYesterdayRecord.amount_killed || 1) : 0;
+        // Verificar se houve morte ontem
+        const killsYesterday = kills.filter(k => k.kill_date === yesterdayStr).length;
 
-        // Cálculo dinâmico puro
-        let expectedDays = 0;
-        let hasDynamicAvg = false;
-
-        if (totalKillsCount >= 2) {
-            let totalInterval = 0;
-            let intervals = 0;
-            for (let i = 1; i < totalKillsCount; i++) {
-                const prev = new Date(kills[i - 1].kill_date);
-                const curr = new Date(kills[i].kill_date);
-                const diff = Math.floor((curr - prev) / 86400000);
-                if (diff > 0) {
-                    totalInterval += diff;
-                    intervals++;
-                }
-            }
-            if (intervals > 0) {
-                expectedDays = Math.round(totalInterval / intervals);
-                hasDynamicAvg = true;
-            }
-        }
-
-        if (!hasDynamicAvg) {
-            return {
-                name: bossName,
-                last_seen: lastKill.kill_date,
-                days_since: daysSince,
-                expected_days: null,
-                chance_percent: 0,
-                status: 'Sincronizando média...',
-                total_kills: totalKillsCount,
-                kills_yesterday: killsYesterdayAmount
-            };
-        }
-
-        // Cálculo de chance baseado na média real encontrada
-        let chancePercent = Math.floor((daysSince / expectedDays) * 100);
-        if (chancePercent > 100) chancePercent = 100;
-
+        // Intervalos
+        const stats = bossIntervals[bossName];
+        let expectedDays = null;
+        let chancePercent = 0;
         let status = 'Aguardando';
-        if (chancePercent >= 90) {
-            status = 'Pode nascer';
-        } else if (chancePercent >= 80) {
-            status = 'Alta chance';
+
+        if (stats && stats.fixedDaysFrequency) {
+            const minDays = stats.fixedDaysFrequency.min;
+            const maxDays = stats.fixedDaysFrequency.max;
+            expectedDays = maxDays;
+
+            const shiftMinDays = lastSeen.confirmed_by === 'TibiaData_API' ? -1 : 0;
+            const adjustedMin = minDays + shiftMinDays;
+
+            if (daysSince < adjustedMin) {
+                chancePercent = adjustedMin > 0 ? Math.floor((daysSince / adjustedMin) * 49) : 0;
+                status = 'Aguardando';
+            } else if (daysSince >= adjustedMin && daysSince <= maxDays) {
+                const range = maxDays - adjustedMin || 1;
+                chancePercent = 50 + Math.floor(((daysSince - adjustedMin) / range) * 50);
+                if (chancePercent >= 90) {
+                    status = 'Pode nascer';
+                } else if (chancePercent >= 80) {
+                    status = 'Alta chance';
+                } else {
+                    status = 'No radar';
+                }
+            } else {
+                chancePercent = 100;
+                status = 'Pode nascer';
+            }
+        }
+
+        // Resolvendo check de boss (se aconteceu após a última morte)
+        let checked_at = null;
+        let checked_by = null;
+        if (lastCheck) {
+            const lastSeenTime = new Date(lastSeen.seen_at.replace(' ', 'T') + ':00Z');
+            const lastCheckTime = new Date(lastCheck.checked_at.replace(' ', 'T') + ':00Z');
+            if (lastCheckTime > lastSeenTime) {
+                checked_at = lastCheck.checked_at;
+                checked_by = db.getUserName(lastCheck.checked_by);
+            }
         }
 
         return {
             name: bossName,
-            last_seen: lastKill.kill_date,
+            last_seen: last_seen_date,
+            seen_at_full: lastSeen.seen_at,
+            confirmed_by: db.getUserName(lastSeen.confirmed_by),
+            city: lastSeen.city || null,
             days_since: daysSince,
             expected_days: expectedDays,
             chance_percent: chancePercent,
             status: status,
             total_kills: totalKillsCount,
-            kills_yesterday: killsYesterdayAmount
+            kills_yesterday: killsYesterday,
+            checked_at: checked_at,
+            checked_by: checked_by
         };
     });
 

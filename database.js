@@ -1,141 +1,231 @@
 /**
- * database.js — SQLite para o Boss Tracker
- *
- * Tabelas:
- *  - kill_snapshots : guarda o total de kills da API por dia (para detectar diff)
- *  - kill_history   : registra cada vez que um boss foi morto (detectado pela diff)
+ * database.js — SQLite para o Boss Tracker integrado ao BossBot
  */
 
 const Database = require('better-sqlite3');
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, 'boss_tracker.db');
+// Caminho para o banco de dados do BossBot
+const DB_PATH = path.join(__dirname, '..', 'BossBot', 'bossbot.db');
 const db = new Database(DB_PATH);
 
 // WAL mode para melhor performance
 db.pragma('journal_mode = WAL');
 
-// ─── Criação das tabelas ──────────────────────────────────────────────────────
+const MULTI_CITY_BOSSES = {
+  "rotworm queen": ["Ab'Dendriel", "Darashia", "Edron", "Liberty Bay"],
+  "the voice of ruin": ["Esquerda", "Direita"],
+  "flamecaller zazrak": ["Surface", "North"],
+  "tyrn": ["Liberty Bay", "Drefia"],
+  "dreadmaw": ["West", "East"],
+  "white pale": ["Edron", "Darashia", "Liberty Bay"],
+  "hirintror": ["Mines", "Nibelor"],
+  "battlemaster zunzu": ["West", "East"],
+  "fleabringer": ["Surface", "North", "Sul"],
+  "albino dragon": ["Farmine", "Fenrock", "Goroma", "POI", "Ank"]
+};
 
-db.exec(`
-    CREATE TABLE IF NOT EXISTS kill_snapshots (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        world        TEXT    NOT NULL,
-        boss_name    TEXT    NOT NULL,
-        total_kills  INTEGER NOT NULL DEFAULT 0,
-        snapshot_date TEXT   NOT NULL,
-        created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
-        UNIQUE(world, boss_name, snapshot_date)
-    );
-
-    CREATE TABLE IF NOT EXISTS kill_history (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        world         TEXT NOT NULL,
-        boss_name     TEXT NOT NULL,
-        kill_date     TEXT NOT NULL,  -- YYYY-MM-DD
-        amount_killed INTEGER NOT NULL DEFAULT 1,
-        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-        UNIQUE(world, boss_name, kill_date)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_snapshots_world_boss ON kill_snapshots(world, boss_name);
-    CREATE INDEX IF NOT EXISTS idx_history_world_boss   ON kill_history(world, boss_name);
-`);
-
-// ─── Prepared statements ──────────────────────────────────────────────────────
-
+// prepared statements
 const stmts = {
-    getLastSnapshot: db.prepare(`
-        SELECT * FROM kill_snapshots
+    getBossLastSeen: db.prepare(`
+        SELECT confirmed_by, seen_at, city FROM boss_last_seen
         WHERE world = ? AND boss_name = ?
-        ORDER BY snapshot_date DESC
         LIMIT 1
     `),
 
-    saveSnapshot: db.prepare(`
-        INSERT INTO kill_snapshots (world, boss_name, total_kills, snapshot_date)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(world, boss_name, snapshot_date)
-        DO UPDATE SET total_kills = excluded.total_kills
+    getBossCheck: db.prepare(`
+        SELECT checked_by, checked_at, city FROM boss_check
+        WHERE world = ? AND boss_name = ?
+        LIMIT 1
     `),
 
-    logKill: db.prepare(`
-        INSERT INTO kill_history (world, boss_name, kill_date, amount_killed)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(world, boss_name, kill_date)
-        DO UPDATE SET amount_killed = excluded.amount_killed
+    getUserName: db.prepare(`
+        SELECT name FROM users WHERE jid = ?
     `),
 
     getKillHistory: db.prepare(`
-        SELECT kill_date, amount_killed FROM kill_history
+        SELECT boss_name, reported_by_jid, extra_text, created_at FROM boss_reports
+        WHERE world = ? AND (boss_name = ? OR boss_name = ?)
+        ORDER BY created_at ASC
+    `),
+
+    getKillHistorySimple: db.prepare(`
+        SELECT boss_name, reported_by_jid, extra_text, created_at FROM boss_reports
         WHERE world = ? AND boss_name = ?
-        ORDER BY kill_date ASC
+        ORDER BY created_at ASC
     `),
 
-    getAllHistory: db.prepare(`
-        SELECT boss_name, kill_date, amount_killed FROM kill_history
-        WHERE world = ?
-        ORDER BY boss_name, kill_date ASC
+    logKillInsertLastSeen: db.prepare(`
+        INSERT INTO boss_last_seen (world, boss_name, confirmed_by, seen_at, city)
+        VALUES (?, ?, 'TibiaData_API', ?, ?)
+        ON CONFLICT(world, boss_name) DO UPDATE SET
+            confirmed_by = excluded.confirmed_by,
+            seen_at = excluded.seen_at,
+            city = excluded.city
     `),
 
-    deleteKill: db.prepare(`
-        DELETE FROM kill_history
-        WHERE world = ? AND boss_name = ? AND kill_date = ?
+    logKillCheckReportExists: db.prepare(`
+        SELECT created_at FROM boss_reports
+        WHERE world = ? AND boss_name = ? AND reported_by_jid = 'TibiaData_API'
+    `),
+
+    logKillInsertReport: db.prepare(`
+        INSERT INTO boss_reports (boss_name, extra_text, reported_by_jid, notified_count, world, created_at)
+        VALUES (?, 'Detectado via TibiaData API', 'TibiaData_API', 0, ?, datetime('now'))
     `)
 };
 
-// ─── Funções exportadas ───────────────────────────────────────────────────────
-
 /**
- * Retorna o snapshot mais recente de um boss
- * @returns {Object|null} { total_kills, snapshot_date } ou null
+ * Retorna o último avistamento de um boss
  */
-function getLastSnapshot(world, bossName) {
-    return stmts.getLastSnapshot.get(world, bossName) ?? null;
+function getBossLastSeen(world, bossName) {
+    try {
+        return stmts.getBossLastSeen.get(world, bossName) ?? null;
+    } catch (err) {
+        console.error(`[DB] Erro em getBossLastSeen (${bossName}):`, err);
+        return null;
+    }
 }
 
 /**
- * Salva (ou atualiza) o snapshot de kills totais de hoje
+ * Retorna o último check (não encontrado) de um boss
  */
-function saveSnapshot(world, bossName, totalKills, date) {
-    stmts.saveSnapshot.run(world, bossName, totalKills, date);
+function getBossCheck(world, bossName) {
+    try {
+        return stmts.getBossCheck.get(world, bossName) ?? null;
+    } catch (err) {
+        console.error(`[DB] Erro em getBossCheck (${bossName}):`, err);
+        return null;
+    }
 }
 
 /**
- * Registra uma kill no histórico (ou atualiza se já existir no mesmo dia)
+ * Converte JID de usuário para nome ou formato legível
  */
-function logKill(world, bossName, date, amount) {
-    stmts.logKill.run(world, bossName, date, amount);
+function getUserName(jid) {
+    if (!jid) return 'Desconhecido';
+    if (jid === 'TibiaData_API') return 'TibiaData API';
+    if (jid === 'system_adjust') return 'Sistema';
+    if (jid === 'flop') return 'Flop';
+
+    try {
+        const row = stmts.getUserName.get(jid);
+        if (row && row.name) {
+            return row.name;
+        }
+    } catch (err) {
+        console.error(`[DB] Erro em getUserName (${jid}):`, err);
+    }
+
+    if (jid.includes('@')) {
+        return `@${jid.split('@')[0]}`;
+    }
+    return jid;
 }
 
 /**
  * Retorna o histórico de kills de um boss ordenado por data ASC
- * @returns {Array} [{ kill_date }]
+ * Mapeado para o formato esperado pelo frontend.
  */
 function getKillHistory(world, bossName) {
-    return stmts.getKillHistory.all(world, bossName);
+    try {
+        // Se bossName tiver cidade, ex: "Rotworm Queen (Edron)", buscar tanto pela cidade quanto pelo nome base "Rotworm Queen"
+        const cityMatch = bossName.match(/^(.+?)\s*\((.+?)\)$/);
+        let rows;
+        if (cityMatch) {
+            const baseName = cityMatch[1].trim();
+            rows = stmts.getKillHistory.all(world, bossName, baseName);
+        } else {
+            rows = stmts.getKillHistorySimple.all(world, bossName);
+        }
+
+        return rows.map(row => {
+            // Converter UTC para BRT
+            const utcDate = new Date(row.created_at.replace(' ', 'T') + 'Z');
+            const brtDate = new Date(utcDate.getTime() - 3 * 60 * 60 * 1000);
+            const kill_date = brtDate.toISOString().split('T')[0];
+
+            return {
+                kill_date,
+                amount_killed: 1,
+                confirmed_by: getUserName(row.reported_by_jid),
+                extra_text: row.extra_text,
+                created_at: row.created_at
+            };
+        });
+    } catch (err) {
+        console.error(`[DB] Erro em getKillHistory (${bossName}):`, err);
+        return [];
+    }
 }
 
 /**
- * Retorna todo histórico de um mundo
- * @returns {Array} [{ boss_name, kill_date }]
+ * Auxiliar para registrar kill de um boss específico
  */
+function logSingleKill(world, bossName, killDate, city = null) {
+    const lastSeen = getBossLastSeen(world, bossName);
+    const seenAtDate = lastSeen ? lastSeen.seen_at.split(' ')[0] : null;
+    const isHuman = lastSeen && lastSeen.confirmed_by !== 'TibiaData_API' && 
+                              lastSeen.confirmed_by !== 'system_adjust' && 
+                              lastSeen.confirmed_by !== 'flop';
+
+    const fallbackDate = `${killDate} 00:00`;
+
+    if (isHuman && seenAtDate === killDate) {
+        console.log(`[DB] logKill: ${bossName} já confirmado por humano (${lastSeen.confirmed_by}), ignorando API.`);
+        return;
+    }
+
+    // Atualizar last seen
+    stmts.logKillInsertLastSeen.run(world, bossName, fallbackDate, city);
+}
+
+/**
+ * Registra uma kill no histórico e atualiza o last seen
+ */
+function logKill(world, bossName, killDate, amount) {
+    try {
+        const key = bossName.toLowerCase();
+        const cities = MULTI_CITY_BOSSES[key];
+
+        // 1. Atualizar o last seen (se for multi-cidade, atualizar para cada cidade)
+        if (cities) {
+            for (const city of cities) {
+                logSingleKill(world, `${bossName} (${city})`, killDate, city);
+            }
+        } else {
+            logSingleKill(world, bossName, killDate, null);
+        }
+
+        // 2. Inserir no histórico de reports do banco de dados (apenas para o bossName base, evitando duplicados)
+        const reports = stmts.logKillCheckReportExists.all(world, bossName);
+        const alreadyReported = reports.some(r => {
+            const utcDate = new Date(r.created_at.replace(' ', 'T') + 'Z');
+            const brtDate = new Date(utcDate.getTime() - 3 * 60 * 60 * 1000);
+            return brtDate.toISOString().split('T')[0] === killDate;
+        });
+
+        if (!alreadyReported) {
+            stmts.logKillInsertReport.run(bossName, world);
+            console.log(`[DB] Kill registrada no histórico (API): ${bossName} em ${killDate}`);
+        }
+    } catch (err) {
+        console.error(`[DB] Erro em logKill (${bossName}):`, err);
+    }
+}
+
+// Para manter compatibilidade com rotas antigas se necessário
 function getAllHistory(world) {
-    return stmts.getAllHistory.all(world);
+    return [];
 }
-
-/**
- * Remove uma kill específica (para correção manual)
- */
-function deleteKill(world, bossName, date) {
-    stmts.deleteKill.run(world, bossName, date);
-}
+function deleteKill(world, bossName, date) {}
 
 module.exports = {
-    getLastSnapshot,
-    saveSnapshot,
-    logKill,
+    getBossLastSeen,
+    getBossCheck,
+    getUserName,
     getKillHistory,
     getAllHistory,
+    logKill,
     deleteKill
 };
